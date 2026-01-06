@@ -6,20 +6,26 @@ import {
   deleteDoc,
   doc,
   type DocumentData,
+  getDoc,
   getDocs,
   increment,
   type QueryDocumentSnapshot,
+  query,
   serverTimestamp,
   setDoc,
   updateDoc,
+  where,
   writeBatch,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
-import type { Player, Category } from "@/lib/models";
+import type { Player, Category, DayEvent, DaySession } from "@/lib/models";
 import type { InsertPlayer, InsertCategory } from "@/lib/validation";
 
 const playersCollection = collection(db, "players");
 const categoriesCollection = collection(db, "categories");
+const dayEventsCollection = collection(db, "dayEvents");
+const daySessionsCollection = collection(db, "daySessions");
+const metaDayDoc = doc(db, "meta", "day");
 
 const mapPlayer = (snapshot: QueryDocumentSnapshot<DocumentData>): Player => {
   const data = snapshot.data() as {
@@ -53,6 +59,31 @@ const mapCategory = (snapshot: QueryDocumentSnapshot<DocumentData>): Category =>
   };
 };
 
+const mapDayEvent = (snapshot: QueryDocumentSnapshot<DocumentData>): DayEvent => {
+  const data = snapshot.data() as {
+    sessionId?: string;
+    playerId?: string;
+    categoryId?: string;
+    categoryName?: string;
+    points?: number;
+    count?: number;
+    totalPoints?: number;
+    createdAt?: { toDate?: () => Date };
+  };
+
+  return {
+    id: snapshot.id,
+    sessionId: data.sessionId ?? "",
+    playerId: data.playerId ?? "",
+    categoryId: data.categoryId ?? "",
+    categoryName: data.categoryName ?? "",
+    points: data.points ?? 0,
+    count: data.count ?? 0,
+    totalPoints: data.totalPoints ?? 0,
+    createdAt: data.createdAt?.toDate?.().toISOString() ?? null,
+  };
+};
+
 const getPlayers = async (): Promise<Player[]> => {
   const snapshot = await getDocs(playersCollection);
   return snapshot.docs.map(mapPlayer);
@@ -61,6 +92,38 @@ const getPlayers = async (): Promise<Player[]> => {
 const getCategories = async (): Promise<Category[]> => {
   const snapshot = await getDocs(categoriesCollection);
   return snapshot.docs.map(mapCategory);
+};
+
+const getDaySession = async (): Promise<DaySession> => {
+  const snapshot = await getDoc(metaDayDoc);
+  if (!snapshot.exists()) {
+    return { currentSessionId: null, startedAt: null, isFinalized: false, finalizedAt: null };
+  }
+  const data = snapshot.data() as {
+    currentSessionId?: string;
+    startedAt?: { toDate?: () => Date };
+    isFinalized?: boolean;
+    finalizedAt?: { toDate?: () => Date };
+  };
+  return {
+    currentSessionId: data.currentSessionId ?? null,
+    startedAt: data.startedAt?.toDate?.().toISOString() ?? null,
+    isFinalized: data.isFinalized ?? false,
+    finalizedAt: data.finalizedAt?.toDate?.().toISOString() ?? null,
+  };
+};
+
+const getPlayerDayEvents = async (
+  sessionId: string,
+  playerId: string,
+): Promise<DayEvent[]> => {
+  const eventsQuery = query(
+    dayEventsCollection,
+    where("sessionId", "==", sessionId),
+    where("playerId", "==", playerId),
+  );
+  const snapshot = await getDocs(eventsQuery);
+  return snapshot.docs.map(mapDayEvent);
 };
 
 export function usePlayers() {
@@ -74,6 +137,21 @@ export function useCategories() {
   return useQuery({
     queryKey: ["categories"],
     queryFn: getCategories,
+  });
+}
+
+export function useDaySession() {
+  return useQuery({
+    queryKey: ["daySession"],
+    queryFn: getDaySession,
+  });
+}
+
+export function usePlayerDayEvents(playerId: string | null, sessionId: string | null) {
+  return useQuery({
+    queryKey: ["dayEvents", sessionId, playerId],
+    queryFn: () => getPlayerDayEvents(sessionId ?? "", playerId ?? ""),
+    enabled: Boolean(playerId && sessionId),
   });
 }
 
@@ -168,6 +246,25 @@ export function useStartDayScoring() {
 
   return useMutation({
     mutationFn: async () => {
+      await deleteCollectionDocs(dayEventsCollection);
+      await deleteCollectionDocs(daySessionsCollection);
+
+      const sessionRef = doc(daySessionsCollection);
+      await setDoc(sessionRef, {
+        startedAt: serverTimestamp(),
+        isFinalized: false,
+      });
+      await setDoc(
+        metaDayDoc,
+        {
+          currentSessionId: sessionRef.id,
+          startedAt: serverTimestamp(),
+          isFinalized: false,
+          finalizedAt: null,
+        },
+        { merge: true },
+      );
+
       const snapshot = await getDocs(playersCollection);
       const chunks = chunkArray(snapshot.docs, 400);
 
@@ -179,9 +276,14 @@ export function useStartDayScoring() {
         await batch.commit();
       }
 
-      return { updated: snapshot.size };
+      return { updated: snapshot.size, sessionId: sessionRef.id };
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["players"] }),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["players"] }),
+        queryClient.invalidateQueries({ queryKey: ["daySession"] }),
+        queryClient.invalidateQueries({ queryKey: ["dayEvents"] }),
+      ]),
   });
 }
 
@@ -192,20 +294,49 @@ export function useApplyDayScoreDelta() {
     mutationFn: async ({
       playerId,
       delta,
+      sessionId,
+      items,
     }: {
       playerId: string;
       delta: number;
+      sessionId: string;
+      items: Array<{
+        categoryId: string;
+        categoryName: string;
+        points: number;
+        count: number;
+        totalPoints: number;
+      }>;
     }) => {
-      if (!delta) return { applied: 0 };
-
-      await updateDoc(doc(db, "players", playerId), {
+      const batch = writeBatch(db);
+      batch.update(doc(db, "players", playerId), {
         scoreDay: increment(delta),
         score: increment(delta),
       });
 
+      for (const item of items) {
+        const eventRef = doc(dayEventsCollection);
+        batch.set(eventRef, {
+          sessionId,
+          playerId,
+          categoryId: item.categoryId,
+          categoryName: item.categoryName,
+          points: item.points,
+          count: item.count,
+          totalPoints: item.totalPoints,
+          createdAt: serverTimestamp(),
+        });
+      }
+
+      await batch.commit();
+
       return { applied: delta };
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["players"] }),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["players"] }),
+        queryClient.invalidateQueries({ queryKey: ["dayEvents"] }),
+      ]),
   });
 }
 
@@ -274,9 +405,18 @@ export function useFinalizeDayScoring() {
 
       const bestUpdated = players.filter((p) => p.scoreDay === maxScoreDay).length;
       const badUpdated = players.filter((p) => p.scoreDay === minScoreDay).length;
+      await setDoc(
+        metaDayDoc,
+        { isFinalized: true, finalizedAt: serverTimestamp() },
+        { merge: true },
+      );
       return { bestUpdated, badUpdated, maxScoreDay, minScoreDay };
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["players"] }),
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["players"] }),
+        queryClient.invalidateQueries({ queryKey: ["daySession"] }),
+      ]),
   });
 }
 
@@ -286,6 +426,19 @@ function chunkArray<T>(items: T[], size: number) {
     result.push(items.slice(index, index + size));
   }
   return result;
+}
+
+async function deleteCollectionDocs(targetCollection: ReturnType<typeof collection>) {
+  const snapshot = await getDocs(targetCollection);
+  if (snapshot.empty) return;
+  const chunks = chunkArray(snapshot.docs, 400);
+  for (const docsChunk of chunks) {
+    const batch = writeBatch(db);
+    for (const docSnap of docsChunk) {
+      batch.delete(docSnap.ref);
+    }
+    await batch.commit();
+  }
 }
 
 const DEFAULT_PLAYERS = [
@@ -317,8 +470,6 @@ const DEFAULT_CATEGORIES = [
   { name: "Gol", points: 5 },
   { name: "Defesa difícil", points: 4 },
   { name: "Assistência", points: 3 },
-  { name: "Vitória do time", points: 1 },
-  { name: "Derrota do time", points: -1 },
   { name: "Perder gol feito", points: -2 },
   { name: "Mão na bola", points: -2 },
   { name: "Goleiro vazado", points: -3 },

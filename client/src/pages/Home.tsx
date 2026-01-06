@@ -1,17 +1,33 @@
 import { Link } from "wouter";
-import { usePlayers, useInitializeDB } from "@/hooks/use-data";
+import { useDaySession, usePlayers, useInitializeDB, usePlayerDayEvents } from "@/hooks/use-data";
 import { PlayerCard } from "@/components/PlayerCard";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Shield, LogIn, ShieldCheck, Trophy } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
+import { useMemo, useState } from "react";
 
 export default function Home() {
   const { isAuthenticated } = useAuth();
 
   useInitializeDB(); // Ensure data exists
   const { data: players, isLoading } = usePlayers();
+  const { data: daySession } = useDaySession();
+  const [selectedDayPlayerId, setSelectedDayPlayerId] = useState<string | null>(null);
+  const [isDayModalOpen, setIsDayModalOpen] = useState(false);
+
+  const { data: dayEvents, isLoading: dayEventsLoading } = usePlayerDayEvents(
+    selectedDayPlayerId,
+    daySession?.currentSessionId ?? null,
+  );
 
   const playersByScore = (players ?? [])
     .slice()
@@ -32,6 +48,36 @@ export default function Home() {
     .slice()
     .sort((a, b) => (b.bad !== a.bad ? b.bad - a.bad : a.name.localeCompare(b.name)))
     .filter((player) => player.bad > 0);
+
+  const selectedDayPlayer = (players ?? []).find((player) => player.id === selectedDayPlayerId) ?? null;
+
+  const groupedDayEvents = useMemo(() => {
+    if (!dayEvents) return [];
+    const map = new Map<
+      string,
+      { categoryName: string; points: number; count: number; totalPoints: number }
+    >();
+
+    for (const event of dayEvents) {
+      const key = event.categoryId || event.categoryName;
+      const current = map.get(key);
+      if (current) {
+        current.count += event.count;
+        current.totalPoints += event.totalPoints;
+      } else {
+        map.set(key, {
+          categoryName: event.categoryName,
+          points: event.points,
+          count: event.count,
+          totalPoints: event.totalPoints,
+        });
+      }
+    }
+
+    return Array.from(map.values()).sort((a, b) => b.totalPoints - a.totalPoints);
+  }, [dayEvents]);
+
+  const totalDayPoints = groupedDayEvents.reduce((sum, item) => sum + item.totalPoints, 0);
 
   return (
     <div className="page-scroll bg-background pb-20 safe-area-bottom">
@@ -139,6 +185,10 @@ export default function Home() {
                   rank={index + 1}
                   total={playersByScoreDay.length}
                   scoreValue={player.scoreDay}
+                  onClick={() => {
+                    setSelectedDayPlayerId(player.id);
+                    setIsDayModalOpen(true);
+                  }}
                 />
               ))
             ) : (
@@ -194,6 +244,55 @@ export default function Home() {
           </TabsContent>
         </Tabs>
       </main>
+
+      <Dialog open={isDayModalOpen} onOpenChange={setIsDayModalOpen}>
+        <DialogContent className="max-w-md w-full max-h-[80vh] overflow-y-auto safe-area-overlay">
+          <DialogHeader>
+            <DialogTitle>Detalhe da pontuação do dia</DialogTitle>
+            <DialogDescription>
+              {selectedDayPlayer ? selectedDayPlayer.name : "Jogador"}
+            </DialogDescription>
+          </DialogHeader>
+
+          {!daySession?.currentSessionId ? (
+            <div className="text-sm text-muted-foreground">
+              A pontuação do dia ainda não foi iniciada.
+            </div>
+          ) : dayEventsLoading ? (
+            <div className="text-sm text-muted-foreground">Carregando histórico...</div>
+          ) : groupedDayEvents.length === 0 ? (
+            <div className="text-sm text-muted-foreground">Nenhum registro para este jogador.</div>
+          ) : (
+            <div className="space-y-3">
+              <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+                <div className="text-xs uppercase text-muted-foreground">Total do dia</div>
+                <div className="text-lg font-bold text-primary">
+                  {totalDayPoints > 0 ? "+" : ""}
+                  {totalDayPoints} pts
+                </div>
+              </div>
+
+              <div className="space-y-2 pb-3">
+                {groupedDayEvents.map((item) => (
+                  <div key={`${item.categoryName}-${item.points}`} className="flex items-center justify-between rounded-lg border bg-card p-3 text-sm">
+                    <div>
+                      <div className="font-semibold">{item.categoryName}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {item.count}x ({item.points > 0 ? "+" : ""}
+                        {item.points})
+                      </div>
+                    </div>
+                    <div className="font-bold tabular-nums">
+                      {item.totalPoints > 0 ? "+" : ""}
+                      {item.totalPoints}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

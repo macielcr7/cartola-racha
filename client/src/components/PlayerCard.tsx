@@ -10,6 +10,7 @@ interface PlayerCardProps {
   total: number;
   scoreValue?: number;
   showStatusLabels?: boolean;
+  onClick?: () => void;
 }
 
 export function PlayerCard({
@@ -18,11 +19,13 @@ export function PlayerCard({
   total,
   scoreValue,
   showStatusLabels = true,
+  onClick,
 }: PlayerCardProps) {
   const isTop3 = rank <= 3;
   const isLast = total > 1 && rank === total;
   const initials = getInitials(player.name);
   const points = scoreValue ?? player.score;
+  const isClickable = Boolean(onClick);
   
   return (
     <motion.div
@@ -33,8 +36,19 @@ export function PlayerCard({
       className={cn(
         "relative flex items-center p-4 mb-3 rounded-xl border transition-all duration-200",
         "bg-card hover:shadow-lg shadow-sm",
-        isTop3 ? "border-primary/20 bg-gradient-to-r from-card to-primary/5" : "border-border/50"
+        isTop3 ? "border-primary/20 bg-gradient-to-r from-card to-primary/5" : "border-border/50",
+        isClickable && "cursor-pointer"
       )}
+      onClick={onClick}
+      role={isClickable ? "button" : undefined}
+      tabIndex={isClickable ? 0 : undefined}
+      onKeyDown={(event) => {
+        if (!isClickable) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onClick?.();
+        }
+      }}
     >
       {/* Rank Badge */}
       <div className="flex-shrink-0 w-12 flex justify-center">

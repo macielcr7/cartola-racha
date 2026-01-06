@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import {
   useApplyDayScoreDelta,
   useCategories,
+  useDaySession,
   useFinalizeDayScoring,
   usePlayers,
   useStartDayScoring,
@@ -21,14 +22,19 @@ import { Minus, Plus, Zap } from "lucide-react";
 export function ScoreUpdateForm() {
   const { data: players } = usePlayers();
   const { data: categories } = useCategories();
+  const { data: daySession } = useDaySession();
   const startDay = useStartDayScoring();
   const applyDelta = useApplyDayScoreDelta();
   const finalizeDay = useFinalizeDayScoring();
   const { toast } = useToast();
 
-  const [isSessionActive, setIsSessionActive] = useState(false);
+  const [sessionId, setSessionId] = useState<string>("");
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>("");
   const [counts, setCounts] = useState<Record<string, number>>({});
+
+  const activeSessionId = daySession?.currentSessionId ?? sessionId;
+  const isFinalized = daySession?.isFinalized ?? false;
+  const isSessionActive = Boolean(activeSessionId) && !isFinalized;
 
   const selectedPlayer = useMemo(
     () => players?.find((player) => player.id === selectedPlayerId) ?? null,
@@ -61,8 +67,8 @@ export function ScoreUpdateForm() {
 
   const handleStart = async () => {
     try {
-      await startDay.mutateAsync();
-      setIsSessionActive(true);
+      const result = await startDay.mutateAsync();
+      setSessionId(result.sessionId);
       setSelectedPlayerId("");
       resetCounts();
       toast({
@@ -80,7 +86,29 @@ export function ScoreUpdateForm() {
 
   const handleApply = async () => {
     if (!isSessionActive || !selectedPlayerId) return;
-    if (!delta) {
+    if (!activeSessionId) {
+      toast({
+        title: "Sessão não encontrada",
+        description: "Clique em iniciar pontuação para criar uma sessão do dia.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const items = (categories ?? [])
+      .map((category) => {
+        const count = counts[category.id] ?? 0;
+        if (!count) return null;
+        return {
+          categoryId: category.id,
+          categoryName: category.name,
+          points: category.points,
+          count,
+          totalPoints: category.points * count,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+
+    if (items.length === 0) {
       toast({
         title: "Nada para aplicar",
         description: "Ajuste alguma regra antes de aplicar a pontuação.",
@@ -90,7 +118,12 @@ export function ScoreUpdateForm() {
     }
 
     try {
-      await applyDelta.mutateAsync({ playerId: selectedPlayerId, delta });
+      await applyDelta.mutateAsync({
+        playerId: selectedPlayerId,
+        delta,
+        sessionId: activeSessionId,
+        items,
+      });
       resetCounts();
       toast({
         title: "Pontuação aplicada",
@@ -108,7 +141,7 @@ export function ScoreUpdateForm() {
   const handleFinalize = async () => {
     try {
       const result = await finalizeDay.mutateAsync();
-      setIsSessionActive(false);
+      setSessionId("");
       setSelectedPlayerId("");
       resetCounts();
 
@@ -143,7 +176,7 @@ export function ScoreUpdateForm() {
           <Button
             className="h-12 font-bold bg-secondary hover:bg-secondary/90 shadow-lg shadow-secondary/20"
             onClick={handleStart}
-            disabled={startDay.isPending || isSessionActive}
+            disabled={startDay.isPending}
           >
             {startDay.isPending ? "Iniciando..." : "Iniciar Pontuação"}
           </Button>
@@ -151,11 +184,16 @@ export function ScoreUpdateForm() {
             variant="outline"
             className="h-12 font-bold"
             onClick={handleFinalize}
-            disabled={finalizeDay.isPending || !isSessionActive}
+            disabled={finalizeDay.isPending || !activeSessionId || isFinalized}
           >
             {finalizeDay.isPending ? "Finalizando..." : "Finalizar Pontuação"}
           </Button>
         </div>
+        {isFinalized && (
+          <div className="text-sm text-muted-foreground">
+            Pontuação finalizada. Inicie uma nova pontuação para continuar.
+          </div>
+        )}
 
         <div className="space-y-2">
           <label className="text-sm font-medium text-muted-foreground">Selecione o jogador</label>
@@ -210,14 +248,14 @@ export function ScoreUpdateForm() {
                   className="flex items-center justify-between gap-3 rounded-xl border bg-background p-3"
                 >
                   <div className="min-w-0">
-                    <div className="font-medium truncate">{category.name}</div>
+                    <div className="text-sm">{category.name}</div>
                     <div className="text-xs text-muted-foreground">
                       {category.points > 0 ? "+" : ""}
                       {category.points} pts
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1">
                     <Button
                       variant="outline"
                       size="icon"
