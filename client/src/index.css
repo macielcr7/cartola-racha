@@ -1,0 +1,117 @@
+@import url('https://fonts.googleapis.com/css2?family=Chakra+Petch:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300&family=Inter:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Cartola-inspired Palette */
+  --font-display: 'Chakra Petch', sans-serif;
+  --font-body: 'Inter', sans-serif;
+
+  --background: 145 20% 96%; /* Light greenish-gray bg */
+  --foreground: 155 40% 10%; /* Dark green text */
+
+  --card: 0 0% 100%;
+  --card-foreground: 155 40% 10%;
+
+  --popover: 0 0% 100%;
+  --popover-foreground: 155 40% 10%;
+
+  --primary: 25 95% 53%; /* Vibrant Orange */
+  --primary-foreground: 0 0% 100%;
+
+  --secondary: 155 60% 45%; /* Grass Green */
+  --secondary-foreground: 0 0% 100%;
+
+  --muted: 145 20% 90%;
+  --muted-foreground: 155 20% 40%;
+
+  --accent: 25 95% 53%;
+  --accent-foreground: 0 0% 100%;
+
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 98%;
+
+  --border: 145 20% 88%;
+  --input: 145 20% 88%;
+  --ring: 25 95% 53%;
+
+  --radius: 0.75rem;
+}
+
+.dark {
+  --background: 155 40% 5%;
+  --foreground: 145 20% 90%;
+
+  --card: 155 40% 8%;
+  --card-foreground: 145 20% 90%;
+
+  --popover: 155 40% 8%;
+  --popover-foreground: 145 20% 90%;
+
+  --primary: 25 95% 53%;
+  --primary-foreground: 0 0% 100%;
+
+  --secondary: 155 60% 45%;
+  --secondary-foreground: 0 0% 100%;
+
+  --muted: 155 30% 15%;
+  --muted-foreground: 145 20% 60%;
+
+  --accent: 25 95% 53%;
+  --accent-foreground: 0 0% 100%;
+
+  --destructive: 0 62% 30%;
+  --destructive-foreground: 0 0% 98%;
+
+  --border: 155 30% 15%;
+  --input: 155 30% 15%;
+  --ring: 25 95% 53%;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-body);
+  }
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+    @apply font-bold tracking-tight uppercase;
+  }
+}
+
+.glass-card {
+  @apply bg-white/80 backdrop-blur-md border border-white/20 shadow-xl dark:bg-black/60 dark:border-white/10;
+}
+
+.text-shadow-sm {
+  text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+}
+
+.gradient-text {
+  @apply bg-clip-text text-transparent bg-gradient-to-r from-primary to-orange-400;
+}
+
+.safe-area-top {
+  padding-top: var(--ion-safe-area-top, env(safe-area-inset-top));
+}
+
+.safe-area-bottom {
+  padding-bottom: var(--ion-safe-area-bottom, env(safe-area-inset-bottom));
+}
+
+.page-scroll {
+  height: 100vh;
+  height: 100svh;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.safe-area-overlay {
+  padding-top: var(--ion-safe-area-top, env(safe-area-inset-top));
+  padding-bottom: var(--ion-safe-area-bottom, env(safe-area-inset-bottom));
+}
