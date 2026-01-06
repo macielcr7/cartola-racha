@@ -41,6 +41,12 @@ Imagens do app na pasta `screenshot/`.
 3) Rodar:
    - `npm run dev`
 
+## GitHub Pages (web)
+- URL: `https://macielcr7.github.io/cartola-racha/`
+- Deploy:
+  1) `npm run deploy`
+  2) No GitHub: Settings → Pages → Source: `gh-pages` / `/ (root)`
+
 ## Variáveis de ambiente (Firebase)
 No arquivo `client/.env`:
 - `VITE_FIREBASE_API_KEY`
@@ -95,6 +101,7 @@ O app considera admin se existir `admins/{uid}`.
 - `npm run build:app`: `cap:assets` + `build` + `cap sync`
 - `npm run cap:add:android` / `npm run cap:add:ios`: adiciona plataformas (uma vez)
 - `npm run cap:android` / `npm run cap:ios`: abre no Android Studio / Xcode
+- `npm run deploy`: publica no GitHub Pages (branch `gh-pages`)
 
 
 # Release Android/iOS (Ionic + Capacitor)
