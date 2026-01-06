@@ -15,13 +15,13 @@ App de ranking/pontuação para “racha” (liga), feito em **React + Ionic/Cap
 ## Screenshots
 Imagens do app na pasta `screenshot/`.
 
-| Home | Admin | Regras / Ações |
+| Home | Iniciar Pontuação | Jogadores / Regras / Ações / Usuários |
 | --- | --- | --- |
-| ![Home](screenshot/1.jpeg) | ![Admin](screenshot/2.png) | ![Ações](screenshot/3.png) |
+| ![Home](screenshot/1.jpeg) | ![Iniciar Pontuação](screenshot/2.png) | ![Cadastro Jogadores](screenshot/3.png) |
 
-| Pontuação do Dia | Pancada/Melhor |
+| Regras de Ponto | Pancada/Melhor |
 | --- | --- |
-| ![Pontuação do Dia](screenshot/4.png) | ![Pancada/Melhor](screenshot/5.png) |
+| ![Regras de Ponto](screenshot/4.png) | ![Pancada/Melhor](screenshot/5.png) |
 
 ## Stack
 - React + Vite
