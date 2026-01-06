@@ -238,7 +238,10 @@ export function ScoreUpdateForm() {
             Regras
           </div>
           <div className="space-y-2">
-            {(categories ?? []).map((category) => {
+            {(categories ?? [])
+              .slice()
+              .sort((a, b) => b.points - a.points)
+              .map((category) => {
               const count = counts[category.id] ?? 0;
               const isDisabled = !isSessionActive || !selectedPlayerId;
 

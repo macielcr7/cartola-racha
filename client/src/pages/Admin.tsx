@@ -167,7 +167,10 @@ export default function Admin() {
 
             <Card className="border-none shadow-none bg-transparent">
               <CardContent className="p-0 grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {categories?.map((cat) => (
+                {categories
+                  ?.slice()
+                  .sort((a, b) => b.points - a.points)
+                  .map((cat) => (
                   <div key={cat.id} className="flex items-center justify-between p-4 rounded-xl border bg-card">
                     <div className="flex items-center gap-3">
                       <div className={`
