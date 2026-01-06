@@ -12,6 +12,17 @@ App de ranking/pontuação para “racha” (liga), feito em **React + Ionic/Cap
   - Fluxo de pontuação do dia: **Iniciar Pontuação → aplicar regras (+/-) → Aplicar Pontuação → Finalizar Pontuação**
 - Mobile (iOS/Android) via Capacitor.
 
+## Screenshots
+Imagens do app na pasta `screenshot/`.
+
+| Home | Admin | Regras / Ações |
+| --- | --- | --- |
+| ![Home](screenshot/1.jpeg) | ![Admin](screenshot/2.png) | ![Ações](screenshot/3.png) |
+
+| Pontuação do Dia | Pancada/Melhor |
+| --- | --- |
+| ![Pontuação do Dia](screenshot/4.png) | ![Pancada/Melhor](screenshot/5.png) |
+
 ## Stack
 - React + Vite
 - Ionic React (base CSS + `IonApp`)
@@ -85,5 +96,45 @@ O app considera admin se existir `admins/{uid}`.
 - `npm run cap:add:android` / `npm run cap:add:ios`: adiciona plataformas (uma vez)
 - `npm run cap:android` / `npm run cap:ios`: abre no Android Studio / Xcode
 
-## Release Android/iOS
-Passo a passo em `docs/release.md`.
+
+# Release Android/iOS (Ionic + Capacitor)
+
+## Requisitos
+- Node.js e npm instalados.
+- Android Studio (Android SDK configurado).
+- Xcode + CocoaPods (para iOS).
+
+## Preparar assets
+1) `npm run cap:assets`
+2) O comando usa `resources/icon.png` como logo (1024x1024) e gera os ícones/splash automaticamente.
+3) Confirme os arquivos gerados em `android/` e `ios/`.
+
+## Build e sync
+1) `npm install`
+2) `npm run build:app`
+
+## Android (debug)
+1) `npm run cap:add:android` (apenas uma vez)
+2) `npm run cap:android`
+
+## Android (release)
+1) Gere um keystore:
+   - `keytool -genkeypair -v -keystore cartola-canal.keystore -alias cartola -keyalg RSA -keysize 2048 -validity 10000`
+2) Configure assinatura em `android/app/build.gradle`.
+3) Build:
+   - Android Studio > Build > Generate Signed Bundle / APK.
+
+## iOS (debug)
+1) `npm run cap:add:ios` (apenas uma vez)
+2) `npm run cap:ios`
+
+## iOS (release)
+1) Abra o projeto no Xcode.
+2) Configure o bundle id para `com.cartola.canal`.
+3) Ajuste o time de assinatura (Signing & Capabilities).
+4) Product > Archive e siga o fluxo do App Store Connect.
+
+## Atualizar versao
+- `package.json` -> `version`.
+- Android: `android/app/build.gradle` -> `versionCode` e `versionName`.
+- iOS: `ios/App/App.xcodeproj` -> `Marketing Version` e `Build`.
