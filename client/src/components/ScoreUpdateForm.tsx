@@ -5,10 +5,19 @@ import {
   useDaySession,
   useFinalizeDayScoring,
   usePlayers,
+  useRevertDayScoring,
   useStartDayScoring,
 } from "@/hooks/use-data";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -26,15 +35,21 @@ export function ScoreUpdateForm() {
   const startDay = useStartDayScoring();
   const applyDelta = useApplyDayScoreDelta();
   const finalizeDay = useFinalizeDayScoring();
+  const revertDay = useRevertDayScoring();
   const { toast } = useToast();
 
   const [sessionId, setSessionId] = useState<string>("");
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>("");
   const [counts, setCounts] = useState<Record<string, number>>({});
+  const [isRevertOpen, setIsRevertOpen] = useState(false);
 
   const activeSessionId = daySession?.currentSessionId ?? sessionId;
   const isFinalized = daySession?.isFinalized ?? false;
   const isSessionActive = Boolean(activeSessionId) && !isFinalized;
+  const canRevert =
+    Boolean(daySession?.currentSessionId) ||
+    Boolean(players?.some((player) => player.scoreDay !== 0)) ||
+    isFinalized;
 
   const selectedPlayer = useMemo(
     () => players?.find((player) => player.id === selectedPlayerId) ?? null,
@@ -64,6 +79,59 @@ export function ScoreUpdateForm() {
   };
 
   const resetCounts = () => setCounts({});
+
+  const revertPreview = useMemo(() => {
+    const list = (players ?? []).map((player) => ({
+      ...player,
+      scoreBefore: player.score,
+      scoreAfter: player.score - player.scoreDay,
+      scoreDayBefore: player.scoreDay,
+      bestBefore: player.best,
+      badBefore: player.bad,
+      bestAfter: player.best,
+      badAfter: player.bad,
+      isBest: false,
+      isBad: false,
+      hasChanges: player.scoreDay !== 0,
+    }));
+
+    if (list.length === 0) {
+      return { items: [], bestCount: 0, badCount: 0 };
+    }
+
+    let maxScoreDay = list[0].scoreDayBefore;
+    let minScoreDay = list[0].scoreDayBefore;
+    for (const player of list) {
+      if (player.scoreDayBefore > maxScoreDay) maxScoreDay = player.scoreDayBefore;
+      if (player.scoreDayBefore < minScoreDay) minScoreDay = player.scoreDayBefore;
+    }
+
+    let bestCount = 0;
+    let badCount = 0;
+
+    if (isFinalized) {
+      for (const player of list) {
+        if (player.scoreDayBefore === maxScoreDay && player.bestBefore > 0) {
+          player.isBest = true;
+          player.bestAfter = Math.max(0, player.bestBefore - 1);
+          player.hasChanges = true;
+          bestCount += 1;
+        }
+        if (player.scoreDayBefore === minScoreDay && player.badBefore > 0) {
+          player.isBad = true;
+          player.badAfter = Math.max(0, player.badBefore - 1);
+          player.hasChanges = true;
+          badCount += 1;
+        }
+      }
+    }
+
+    return {
+      items: list.filter((item) => item.hasChanges),
+      bestCount,
+      badCount,
+    };
+  }, [players, isFinalized]);
 
   const handleStart = async () => {
     try {
@@ -158,6 +226,28 @@ export function ScoreUpdateForm() {
     }
   };
 
+  const handleRevert = async () => {
+    try {
+      const result = await revertDay.mutateAsync();
+      setIsRevertOpen(false);
+      setSessionId("");
+      setSelectedPlayerId("");
+      resetCounts();
+      toast({
+        title: "Pontuação revertida",
+        description: result.isFinalized
+          ? `Dia revertido. Best revertidos: ${result.bestReverted}, Bad revertidos: ${result.badReverted}.`
+          : "Dia revertido. Você pode iniciar a pontuação novamente.",
+      });
+    } catch {
+      toast({
+        title: "Erro",
+        description: "Não foi possível reverter a pontuação. Tente novamente.",
+        variant: "destructive",
+      });
+    }
+  };
+
   return (
     <Card className="border-primary/10 shadow-lg bg-gradient-to-br from-card to-secondary/5">
       <CardHeader>
@@ -187,6 +277,14 @@ export function ScoreUpdateForm() {
             disabled={finalizeDay.isPending || !activeSessionId || isFinalized}
           >
             {finalizeDay.isPending ? "Finalizando..." : "Finalizar Pontuação"}
+          </Button>
+          <Button
+            variant="destructive"
+            className="h-12 font-bold"
+            onClick={() => setIsRevertOpen(true)}
+            disabled={revertDay.isPending || !canRevert}
+          >
+            {revertDay.isPending ? "Revertendo..." : "Reverter Pontuação"}
           </Button>
         </div>
         {isFinalized && (
@@ -293,6 +391,86 @@ export function ScoreUpdateForm() {
           {applyDelta.isPending ? "Aplicando..." : `Aplicar Pontuação (${delta > 0 ? "+" : ""}${delta} pts)`}
         </Button>
       </CardContent>
+
+      <Dialog open={isRevertOpen} onOpenChange={setIsRevertOpen}>
+        <DialogContent className="max-w-2xl w-full max-h-[80vh] overflow-y-auto safe-area-overlay">
+          <DialogHeader>
+            <DialogTitle>Reverter pontuação do dia</DialogTitle>
+            <DialogDescription>
+              Essa ação desfaz a pontuação do dia, zera o `scoreDay` e apaga o histórico. Depois você poderá iniciar a pontuação novamente.
+            </DialogDescription>
+          </DialogHeader>
+
+          {!players || players.length === 0 ? (
+            <div className="text-sm text-muted-foreground">Nenhum jogador encontrado.</div>
+          ) : revertPreview.items.length === 0 ? (
+            <div className="text-sm text-muted-foreground">
+              Não há alterações para reverter (pontuação do dia já está zerada).
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {isFinalized && (
+                <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+                  <div className="font-semibold">Atenção</div>
+                  <div className="text-muted-foreground">
+                    Como a pontuação já foi finalizada, esta reversão também vai desfazer `best` e `bad` (considerando empates).
+                  </div>
+                </div>
+              )}
+
+              <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+                <div className="text-xs uppercase text-muted-foreground">Resumo</div>
+                <div>
+                  Jogadores afetados: <span className="font-semibold">{revertPreview.items.length}</span>
+                </div>
+                {isFinalized && (
+                  <div>
+                    Best revertidos: <span className="font-semibold">{revertPreview.bestCount}</span> | Bad revertidos:{" "}
+                    <span className="font-semibold">{revertPreview.badCount}</span>
+                  </div>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                {revertPreview.items
+                  .slice()
+                  .sort((a, b) => Math.abs(b.scoreDayBefore) - Math.abs(a.scoreDayBefore))
+                  .map((player) => (
+                    <div key={player.id} className="rounded-lg border bg-card p-3 text-sm">
+                      <div className="font-semibold">{player.name}</div>
+                      <div className="text-xs text-muted-foreground">
+                        score: {player.scoreBefore} → {player.scoreAfter} | scoreDay: {player.scoreDayBefore} → 0
+                      </div>
+                      {isFinalized && (player.isBest || player.isBad) && (
+                        <div className="text-xs text-muted-foreground">
+                          {player.isBest && (
+                            <span className="mr-3">best: {player.bestBefore} → {player.bestAfter}</span>
+                          )}
+                          {player.isBad && (
+                            <span>bad: {player.badBefore} → {player.badAfter}</span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setIsRevertOpen(false)}>
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleRevert}
+              disabled={revertDay.isPending || !canRevert || !players || players.length === 0}
+            >
+              {revertDay.isPending ? "Revertendo..." : "Confirmar reversão"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

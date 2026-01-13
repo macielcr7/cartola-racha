@@ -196,6 +196,17 @@ export function useDeletePlayer() {
   });
 }
 
+export function useUpdatePlayerName() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ id, name }: { id: string; name: string }) => {
+      await updateDoc(doc(db, "players", id), { name });
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["players"] }),
+  });
+}
+
 export function useCreateCategory() {
   const queryClient = useQueryClient();
 
@@ -277,6 +288,100 @@ export function useStartDayScoring() {
       }
 
       return { updated: snapshot.size, sessionId: sessionRef.id };
+    },
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["players"] }),
+        queryClient.invalidateQueries({ queryKey: ["daySession"] }),
+        queryClient.invalidateQueries({ queryKey: ["dayEvents"] }),
+      ]),
+  });
+}
+
+export function useRevertDayScoring() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async () => {
+      const metaSnapshot = await getDoc(metaDayDoc);
+      const metaData = metaSnapshot.exists()
+        ? (metaSnapshot.data() as { isFinalized?: boolean })
+        : {};
+      const isFinalized = metaData.isFinalized ?? false;
+
+      const playersSnapshot = await getDocs(playersCollection);
+      const players = playersSnapshot.docs.map((docSnap) => {
+        const data = docSnap.data() as Record<string, unknown>;
+        return {
+          ref: docSnap.ref,
+          scoreDay: typeof data.scoreDay === "number" ? data.scoreDay : 0,
+          best: typeof data.best === "number" ? data.best : 0,
+          bad: typeof data.bad === "number" ? data.bad : 0,
+        };
+      });
+
+      if (players.length === 0) {
+        return { playersUpdated: 0, bestReverted: 0, badReverted: 0 };
+      }
+
+      let maxScoreDay = players[0].scoreDay;
+      let minScoreDay = players[0].scoreDay;
+      for (const player of players) {
+        if (player.scoreDay > maxScoreDay) maxScoreDay = player.scoreDay;
+        if (player.scoreDay < minScoreDay) minScoreDay = player.scoreDay;
+      }
+
+      const chunks = chunkArray(players, 400);
+      let bestReverted = 0;
+      let badReverted = 0;
+
+      for (const chunk of chunks) {
+        const batch = writeBatch(db);
+        for (const player of chunk) {
+          const update: Record<string, any> = {
+            scoreDay: 0,
+          };
+
+          if (player.scoreDay !== 0) {
+            update.score = increment(-player.scoreDay);
+          }
+
+          if (isFinalized) {
+            if (player.scoreDay === maxScoreDay && player.best > 0) {
+              update.best = increment(-1);
+              bestReverted += 1;
+            }
+            if (player.scoreDay === minScoreDay && player.bad > 0) {
+              update.bad = increment(-1);
+              badReverted += 1;
+            }
+          }
+
+          batch.update(player.ref, update);
+        }
+        await batch.commit();
+      }
+
+      await deleteCollectionDocs(dayEventsCollection);
+      await deleteCollectionDocs(daySessionsCollection);
+
+      await setDoc(
+        metaDayDoc,
+        {
+          currentSessionId: null,
+          startedAt: null,
+          isFinalized: false,
+          finalizedAt: null,
+        },
+        { merge: true },
+      );
+
+      return {
+        playersUpdated: players.length,
+        bestReverted,
+        badReverted,
+        isFinalized,
+      };
     },
     onSuccess: () =>
       Promise.all([

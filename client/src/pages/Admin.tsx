@@ -8,6 +8,7 @@ import {
 } from "@/hooks/use-data";
 import { CreatePlayerDialog } from "@/components/CreatePlayerDialog";
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
+import { EditPlayerDialog } from "@/components/EditPlayerDialog";
 import { ScoreUpdateForm } from "@/components/ScoreUpdateForm";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -140,6 +141,7 @@ export default function Admin() {
                     <h3 className="font-semibold text-sm truncate">{player.name}</h3>
                     <p className="text-xs text-muted-foreground">Pontuação: {player.score}</p>
                   </div>
+                  <EditPlayerDialog player={player} />
                   <Button
                     variant="ghost"
                     size="icon"
