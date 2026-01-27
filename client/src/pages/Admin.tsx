@@ -5,6 +5,8 @@ import {
   useCategories,
   useDeletePlayer,
   useDeleteCategory,
+  useDayParticipants,
+  useDaySession,
 } from "@/hooks/use-data";
 import { CreatePlayerDialog } from "@/components/CreatePlayerDialog";
 import { CreateCategoryDialog } from "@/components/CreateCategoryDialog";
@@ -43,8 +45,30 @@ export default function Admin() {
 
   const { data: players } = usePlayers();
   const { data: categories } = useCategories();
+  const { data: daySession } = useDaySession();
+  const { data: dayParticipants, isLoading: dayParticipantsLoading } = useDayParticipants(
+    daySession?.currentSessionId ?? null,
+  );
   const deletePlayer = useDeletePlayer();
   const deleteCategory = useDeleteCategory();
+
+  const isDayRunning = Boolean(daySession?.currentSessionId) && !(daySession?.isFinalized ?? false);
+  const dayParticipantsIds = dayParticipants?.participants ?? [];
+
+  const dayRanking = useMemo(() => {
+    if (!isDayRunning) return [];
+    if (dayParticipantsIds.length === 0) return [];
+    const participantsSet = new Set(dayParticipantsIds);
+    return (players ?? [])
+      .filter((player) => participantsSet.has(player.id))
+      .slice()
+      .sort((a, b) =>
+        b.scoreDay !== a.scoreDay ? b.scoreDay - a.scoreDay : a.name.localeCompare(b.name),
+      );
+  }, [players, isDayRunning, dayParticipantsIds]);
+
+  const topTwo = dayRanking.slice(0, 2);
+  const bottomTwo = dayRanking.length <= 2 ? [] : dayRanking.slice(-2);
 
   const handleLogout = async () => {
     await logout();
@@ -206,21 +230,76 @@ export default function Admin() {
             <ScoreUpdateForm />
             
             <div className="mt-8">
-              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">Ranking Atual</h3>
-              <div className="space-y-2">
-                {players
-                  ?.sort((a, b) => b.score - a.score)
-                  .slice(0, 3)
-                  .map((player, idx) => (
-                    <div key={player.id} className="flex items-center justify-between p-3 rounded-lg bg-muted/30">
-                      <div className="flex items-center gap-3">
-                        <span className="text-xs font-bold text-muted-foreground w-4">#{idx + 1}</span>
-                        <span className="font-medium text-sm">{player.name}</span>
-                      </div>
-                      <span className="font-bold text-sm">{player.score} pts</span>
+              <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-4">
+                Ranking do Dia (em andamento)
+              </h3>
+
+              {!isDayRunning ? (
+                <div className="text-sm text-muted-foreground">
+                  Inicie a pontuação do dia para ver o ranking em andamento.
+                </div>
+              ) : dayParticipantsLoading ? (
+                <div className="text-sm text-muted-foreground">Carregando participantes...</div>
+              ) : dayParticipantsIds.length === 0 ? (
+                <div className="text-sm text-muted-foreground">
+                  Defina os participantes do dia para ver o ranking em andamento.
+                </div>
+              ) : dayRanking.length === 0 ? (
+                <div className="text-sm text-muted-foreground">
+                  Nenhum participante encontrado.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                      Top
                     </div>
-                  ))}
-              </div>
+                    {topTwo.map((player, idx) => (
+                      <div
+                        key={player.id}
+                        className="flex items-center justify-between p-3 rounded-lg bg-muted/30"
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="text-xs font-bold text-muted-foreground w-8">
+                            #{idx + 1}
+                          </span>
+                          <span className="font-medium text-sm">{player.name}</span>
+                        </div>
+                        <span className="font-bold text-sm tabular-nums">{player.scoreDay} pts</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                      Fundo
+                    </div>
+                    {bottomTwo.length === 0 ? (
+                      <div className="text-sm text-muted-foreground">
+                        Ranking com 2 jogadores (sem penúltimo/último separados).
+                      </div>
+                    ) : (
+                      bottomTwo.map((player, idx) => {
+                        const rank = dayRanking.length - (bottomTwo.length - idx) + 1;
+                        return (
+                          <div
+                            key={player.id}
+                            className="flex items-center justify-between p-3 rounded-lg bg-muted/30"
+                          >
+                            <div className="flex items-center gap-3">
+                              <span className="text-xs font-bold text-muted-foreground w-8">
+                                #{rank}
+                              </span>
+                              <span className="font-medium text-sm">{player.name}</span>
+                            </div>
+                            <span className="font-bold text-sm tabular-nums">{player.scoreDay} pts</span>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </TabsContent>
 

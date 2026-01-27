@@ -3,10 +3,15 @@ import {
   useApplyDayScoreDelta,
   useCategories,
   useDaySession,
+  useDayParticipants,
+  useDeleteDayEvent,
   useFinalizeDayScoring,
+  usePlayerDayEvents,
   usePlayers,
   useRevertDayScoring,
+  useSetDayParticipants,
   useStartDayScoring,
+  useUpdateDayEventCount,
 } from "@/hooks/use-data";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
@@ -18,6 +23,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
@@ -26,12 +34,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Minus, Plus, Zap } from "lucide-react";
+import { Check, Minus, Pencil, Plus, Trash2, Users, X, Zap } from "lucide-react";
 
 export function ScoreUpdateForm() {
   const { data: players } = usePlayers();
   const { data: categories } = useCategories();
   const { data: daySession } = useDaySession();
+  const setDayParticipants = useSetDayParticipants();
   const startDay = useStartDayScoring();
   const applyDelta = useApplyDayScoreDelta();
   const finalizeDay = useFinalizeDayScoring();
@@ -42,8 +51,14 @@ export function ScoreUpdateForm() {
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>("");
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [isRevertOpen, setIsRevertOpen] = useState(false);
+  const [isParticipantsOpen, setIsParticipantsOpen] = useState(false);
+  const [participantsSearch, setParticipantsSearch] = useState("");
+  const [selectedParticipantIds, setSelectedParticipantIds] = useState<string[]>([]);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+  const [editingEventId, setEditingEventId] = useState<string | null>(null);
+  const [editingCount, setEditingCount] = useState<string>("");
 
-  const activeSessionId = daySession?.currentSessionId ?? sessionId;
+  const activeSessionId = sessionId || daySession?.currentSessionId || null;
   const isFinalized = daySession?.isFinalized ?? false;
   const isSessionActive = Boolean(activeSessionId) && !isFinalized;
   const canRevert =
@@ -51,10 +66,34 @@ export function ScoreUpdateForm() {
     Boolean(players?.some((player) => player.scoreDay !== 0)) ||
     isFinalized;
 
+  const { data: dayParticipants, isLoading: participantsLoading } = useDayParticipants(
+    activeSessionId ?? null,
+  );
+  const participants = dayParticipants?.participants ?? [];
+  const participantSet = useMemo(() => new Set(participants), [participants]);
+
+  const availablePlayersForScoring = useMemo(() => {
+    const list = players ?? [];
+    if (!activeSessionId) return [];
+    if (participants.length === 0) return [];
+
+    const order = new Map(participants.map((id, idx) => [id, idx]));
+    return list
+      .filter((player) => order.has(player.id))
+      .slice()
+      .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+  }, [players, participants, activeSessionId]);
+
   const selectedPlayer = useMemo(
     () => players?.find((player) => player.id === selectedPlayerId) ?? null,
     [players, selectedPlayerId],
   );
+
+  const selectedIsParticipant = useMemo(() => {
+    if (!selectedPlayerId) return false;
+    if (participants.length === 0) return false;
+    return participantSet.has(selectedPlayerId);
+  }, [selectedPlayerId, participantSet, participants.length]);
 
   const delta = useMemo(() => {
     const items = categories ?? [];
@@ -80,6 +119,67 @@ export function ScoreUpdateForm() {
 
   const resetCounts = () => setCounts({});
 
+  const openParticipantsDialog = () => {
+    const current = participants.length > 0 ? participants : daySession?.lastParticipants ?? [];
+    const existingIds = new Set((players ?? []).map((player) => player.id));
+    const next = Array.from(new Set(current)).filter((id) => existingIds.has(id));
+
+    setSelectedParticipantIds(next);
+    setParticipantsSearch("");
+    setIsParticipantsOpen(true);
+  };
+
+  const selectedParticipantSet = useMemo(
+    () => new Set(selectedParticipantIds),
+    [selectedParticipantIds],
+  );
+
+  const filteredPlayersForParticipants = useMemo(() => {
+    const list = (players ?? [])
+      .slice()
+      .sort((a, b) => a.name.localeCompare(b.name, "pt-BR"));
+    const search = participantsSearch.trim().toLowerCase();
+    if (!search) return list;
+    return list.filter((player) => player.name.toLowerCase().includes(search));
+  }, [players, participantsSearch]);
+
+  const toggleParticipant = (playerId: string, checked: boolean) => {
+    setSelectedParticipantIds((prev) => {
+      const set = new Set(prev);
+      if (checked) set.add(playerId);
+      else set.delete(playerId);
+      return Array.from(set);
+    });
+  };
+
+  const handleSaveParticipants = async () => {
+    if (!activeSessionId) return;
+    try {
+      const result = await setDayParticipants.mutateAsync({
+        sessionId: activeSessionId,
+        participants: selectedParticipantIds,
+      });
+      setIsParticipantsOpen(false);
+
+      const nextSet = new Set(result.participants);
+      if (selectedPlayerId && !nextSet.has(selectedPlayerId)) {
+        setSelectedPlayerId("");
+        resetCounts();
+      }
+
+      toast({
+        title: "Participantes definidos",
+        description: `${result.participants.length} jogador(es) selecionado(s) para o dia.`,
+      });
+    } catch (error) {
+      toast({
+        title: "Erro",
+        description: error instanceof Error ? error.message : "Não foi possível salvar os participantes. Tente novamente.",
+        variant: "destructive",
+      });
+    }
+  };
+
   const revertPreview = useMemo(() => {
     const list = (players ?? []).map((player) => ({
       ...player,
@@ -99,9 +199,17 @@ export function ScoreUpdateForm() {
       return { items: [], bestCount: 0, badCount: 0 };
     }
 
-    let maxScoreDay = list[0].scoreDayBefore;
-    let minScoreDay = list[0].scoreDayBefore;
-    for (const player of list) {
+    const scoringPool =
+      isFinalized && participants.length > 0
+        ? list.filter((player) => participantSet.has(player.id))
+        : list;
+    if (scoringPool.length === 0) {
+      return { items: list.filter((item) => item.hasChanges), bestCount: 0, badCount: 0 };
+    }
+
+    let maxScoreDay = scoringPool[0].scoreDayBefore;
+    let minScoreDay = scoringPool[0].scoreDayBefore;
+    for (const player of scoringPool) {
       if (player.scoreDayBefore > maxScoreDay) maxScoreDay = player.scoreDayBefore;
       if (player.scoreDayBefore < minScoreDay) minScoreDay = player.scoreDayBefore;
     }
@@ -111,13 +219,14 @@ export function ScoreUpdateForm() {
 
     if (isFinalized) {
       for (const player of list) {
-        if (player.scoreDayBefore === maxScoreDay && player.bestBefore > 0) {
+        const inPool = participants.length > 0 ? participantSet.has(player.id) : true;
+        if (inPool && player.scoreDayBefore === maxScoreDay && player.bestBefore > 0) {
           player.isBest = true;
           player.bestAfter = Math.max(0, player.bestBefore - 1);
           player.hasChanges = true;
           bestCount += 1;
         }
-        if (player.scoreDayBefore === minScoreDay && player.badBefore > 0) {
+        if (inPool && player.scoreDayBefore === minScoreDay && player.badBefore > 0) {
           player.isBad = true;
           player.badAfter = Math.max(0, player.badBefore - 1);
           player.hasChanges = true;
@@ -131,7 +240,7 @@ export function ScoreUpdateForm() {
       bestCount,
       badCount,
     };
-  }, [players, isFinalized]);
+  }, [players, isFinalized, participants.length, participantSet]);
 
   const handleStart = async () => {
     try {
@@ -143,6 +252,7 @@ export function ScoreUpdateForm() {
         title: "Pontuação iniciada",
         description: "A pontuação do dia foi zerada para todos os jogadores.",
       });
+      openParticipantsDialog();
     } catch {
       toast({
         title: "Erro",
@@ -154,6 +264,23 @@ export function ScoreUpdateForm() {
 
   const handleApply = async () => {
     if (!isSessionActive || !selectedPlayerId) return;
+    if (participants.length === 0) {
+      toast({
+        title: "Defina os participantes",
+        description: "Selecione quem jogou hoje antes de aplicar pontuação.",
+        variant: "destructive",
+      });
+      openParticipantsDialog();
+      return;
+    }
+    if (!selectedIsParticipant) {
+      toast({
+        title: "Jogador fora do dia",
+        description: "Selecione um jogador que esteja na lista de participantes.",
+        variant: "destructive",
+      });
+      return;
+    }
     if (!activeSessionId) {
       toast({
         title: "Sessão não encontrada",
@@ -208,6 +335,23 @@ export function ScoreUpdateForm() {
 
   const handleFinalize = async () => {
     try {
+      if (!activeSessionId) {
+        toast({
+          title: "Sessão não encontrada",
+          description: "Clique em iniciar pontuação para criar uma sessão do dia.",
+          variant: "destructive",
+        });
+        return;
+      }
+      if (participants.length === 0) {
+        toast({
+          title: "Defina os participantes",
+          description: "Selecione quem jogou hoje antes de finalizar a pontuação.",
+          variant: "destructive",
+        });
+        openParticipantsDialog();
+        return;
+      }
       const result = await finalizeDay.mutateAsync();
       setSessionId("");
       setSelectedPlayerId("");
@@ -217,10 +361,10 @@ export function ScoreUpdateForm() {
         title: "Pontuação finalizada",
         description: `Melhor(es): ${result.bestUpdated} | Pancada(s): ${result.badUpdated}`,
       });
-    } catch {
+    } catch (error) {
       toast({
         title: "Erro",
-        description: "Não foi possível finalizar a pontuação. Tente novamente.",
+        description: error instanceof Error ? error.message : "Não foi possível finalizar a pontuação. Tente novamente.",
         variant: "destructive",
       });
     }
@@ -248,6 +392,26 @@ export function ScoreUpdateForm() {
     }
   };
 
+  const historyPlayerId = isHistoryOpen ? selectedPlayerId : null;
+  const historySessionId = isHistoryOpen ? activeSessionId ?? null : null;
+  const { data: historyEvents, isLoading: historyLoading } = usePlayerDayEvents(
+    historyPlayerId,
+    historySessionId,
+  );
+  const deleteEvent = useDeleteDayEvent();
+  const updateEventCount = useUpdateDayEventCount();
+
+  const sortedHistoryEvents = useMemo(() => {
+    const list = historyEvents ?? [];
+    return list
+      .slice()
+      .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+  }, [historyEvents]);
+
+  const historyTotal = useMemo(() => {
+    return (historyEvents ?? []).reduce((sum, event) => sum + (event.totalPoints ?? 0), 0);
+  }, [historyEvents]);
+
   return (
     <Card className="border-primary/10 shadow-lg bg-gradient-to-br from-card to-secondary/5">
       <CardHeader>
@@ -269,6 +433,15 @@ export function ScoreUpdateForm() {
             disabled={startDay.isPending}
           >
             {startDay.isPending ? "Iniciando..." : "Iniciar Pontuação"}
+          </Button>
+          <Button
+            variant="outline"
+            className="h-12 font-bold"
+            onClick={openParticipantsDialog}
+            disabled={!activeSessionId || participantsLoading}
+          >
+            <Users className="h-4 w-4 mr-2" />
+            {participantsLoading ? "Carregando..." : `Participantes (${participants.length})`}
           </Button>
           <Button
             variant="outline"
@@ -301,13 +474,23 @@ export function ScoreUpdateForm() {
               setSelectedPlayerId(value);
               resetCounts();
             }}
-            disabled={!isSessionActive}
+            disabled={!isSessionActive || participantsLoading || participants.length === 0}
           >
             <SelectTrigger className="h-12 bg-background">
-              <SelectValue placeholder={isSessionActive ? "Escolha um jogador..." : "Clique em Iniciar Pontuação"} />
+              <SelectValue
+                placeholder={
+                  !isSessionActive
+                    ? "Clique em Iniciar Pontuação"
+                    : participantsLoading
+                      ? "Carregando participantes..."
+                      : participants.length === 0
+                        ? "Defina os participantes do dia"
+                        : "Escolha um jogador..."
+                }
+              />
             </SelectTrigger>
             <SelectContent>
-              {players?.map((player) => (
+              {availablePlayersForScoring.map((player) => (
                 <SelectItem key={player.id} value={player.id}>
                   {player.name}
                 </SelectItem>
@@ -385,12 +568,335 @@ export function ScoreUpdateForm() {
 
         <Button
           className="w-full h-12 text-lg font-bold bg-primary hover:bg-primary/90 shadow-lg shadow-primary/20"
-          disabled={!isSessionActive || !selectedPlayerId || applyDelta.isPending}
+          disabled={
+            !isSessionActive ||
+            !selectedPlayerId ||
+            applyDelta.isPending ||
+            participants.length === 0 ||
+            !selectedIsParticipant
+          }
           onClick={handleApply}
         >
           {applyDelta.isPending ? "Aplicando..." : `Aplicar Pontuação (${delta > 0 ? "+" : ""}${delta} pts)`}
         </Button>
+
+        <Button
+          variant="outline"
+          className="w-full h-12 font-bold"
+          disabled={!isSessionActive || !selectedPlayerId || !selectedIsParticipant}
+          onClick={() => setIsHistoryOpen(true)}
+        >
+          <Pencil className="h-4 w-4 mr-2" />
+          Corrigir/editar eventos do dia
+        </Button>
       </CardContent>
+
+      <Dialog open={isParticipantsOpen} onOpenChange={setIsParticipantsOpen}>
+        <DialogContent className="max-w-2xl w-full max-h-[80vh] overflow-y-auto safe-area-overlay">
+          <DialogHeader>
+            <DialogTitle>Quem jogou hoje?</DialogTitle>
+            <DialogDescription>
+              Selecione os participantes do dia. Só eles aparecem no ranking do dia e entram em best/bad.
+            </DialogDescription>
+          </DialogHeader>
+
+          {!activeSessionId ? (
+            <div className="text-sm text-muted-foreground">
+              Inicie a pontuação para criar uma sessão do dia.
+            </div>
+          ) : !players ? (
+            <div className="text-sm text-muted-foreground">Carregando jogadores...</div>
+          ) : (
+            <div className="space-y-3">
+              {isFinalized && (
+                <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+                  <div className="font-semibold">Dia finalizado</div>
+                  <div className="text-muted-foreground">
+                    A lista de participantes fica travada após finalizar (apenas visualização).
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-col sm:flex-row gap-2">
+                <Input
+                  placeholder="Buscar jogador..."
+                  value={participantsSearch}
+                  onChange={(e) => setParticipantsSearch(e.target.value)}
+                  disabled={isFinalized}
+                />
+                <Button
+                  variant="outline"
+                  onClick={() => setSelectedParticipantIds((players ?? []).map((p) => p.id))}
+                  disabled={isFinalized}
+                >
+                  Selecionar todos
+                </Button>
+                <Button variant="outline" onClick={() => setSelectedParticipantIds([])} disabled={isFinalized}>
+                  Limpar
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    const existingIds = new Set((players ?? []).map((p) => p.id));
+                    const next = Array.from(new Set(daySession?.lastParticipants ?? [])).filter((id) =>
+                      existingIds.has(id),
+                    );
+                    setSelectedParticipantIds(next);
+                  }}
+                  disabled={
+                    isFinalized || !daySession?.lastParticipants || daySession.lastParticipants.length === 0
+                  }
+                >
+                  Repetir último
+                </Button>
+              </div>
+
+              <div className="text-sm text-muted-foreground">
+                Selecionados: <span className="font-semibold">{selectedParticipantIds.length}</span>
+              </div>
+
+              <ScrollArea className="h-[45vh] rounded-lg border bg-background">
+                <div className="p-2 space-y-1">
+                  {filteredPlayersForParticipants.map((player) => {
+                    const checked = selectedParticipantSet.has(player.id);
+                    return (
+                      <div
+                        key={player.id}
+                        className="flex items-center justify-between rounded-md px-2 py-2 hover:bg-muted/40"
+                      >
+                        <div className="flex items-center gap-3">
+                          <Checkbox
+                            checked={checked}
+                            onCheckedChange={(value) => toggleParticipant(player.id, value === true)}
+                            disabled={isFinalized}
+                          />
+                          <div className="text-sm font-medium">{player.name}</div>
+                        </div>
+                        <div className="text-xs text-muted-foreground tabular-nums">
+                          scoreDay: {player.scoreDay}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </ScrollArea>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setIsParticipantsOpen(false)}>
+              Cancelar
+            </Button>
+            <Button
+              onClick={handleSaveParticipants}
+              disabled={
+                !activeSessionId ||
+                isFinalized ||
+                setDayParticipants.isPending ||
+                selectedParticipantIds.length === 0
+              }
+            >
+              {setDayParticipants.isPending ? "Salvando..." : "Salvar participantes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={isHistoryOpen} onOpenChange={setIsHistoryOpen}>
+        <DialogContent className="max-w-2xl w-full max-h-[80vh] overflow-y-auto safe-area-overlay">
+          <DialogHeader>
+            <DialogTitle>Histórico do dia</DialogTitle>
+            <DialogDescription>
+              Edite/remova eventos para corrigir a pontuação do dia (auditável). Isso também ajusta a pontuação total.
+            </DialogDescription>
+          </DialogHeader>
+
+          {!activeSessionId || !selectedPlayer ? (
+            <div className="text-sm text-muted-foreground">Selecione uma sessão e um jogador.</div>
+          ) : isFinalized ? (
+            <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+              <div className="font-semibold">Dia finalizado</div>
+              <div className="text-muted-foreground">
+                Para manter coerência de best/bad, edições de eventos ficam bloqueadas após finalizar.
+              </div>
+            </div>
+          ) : historyLoading ? (
+            <div className="text-sm text-muted-foreground">Carregando eventos...</div>
+          ) : (
+            <div className="space-y-3">
+              <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+                <div className="text-xs uppercase text-muted-foreground">Resumo</div>
+                <div>
+                  Jogador: <span className="font-semibold">{selectedPlayer.name}</span>
+                </div>
+                <div>
+                  Total (eventos):{" "}
+                  <span className="font-semibold">
+                    {historyTotal > 0 ? "+" : ""}
+                    {historyTotal} pts
+                  </span>
+                </div>
+              </div>
+
+              {sortedHistoryEvents.length === 0 ? (
+                <div className="text-sm text-muted-foreground">Nenhum evento registrado para este jogador.</div>
+              ) : (
+                <div className="space-y-2">
+                  {sortedHistoryEvents.map((event) => {
+                    const isEditing = editingEventId === event.id;
+                    return (
+                      <div key={event.id} className="rounded-lg border bg-card p-3 text-sm">
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="font-semibold truncate">{event.categoryName}</div>
+                            <div className="text-xs text-muted-foreground">
+                              {event.createdAt ? new Date(event.createdAt).toLocaleString("pt-BR") : "—"}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={() => {
+                                setEditingEventId(event.id);
+                                setEditingCount(String(event.count));
+                              }}
+                              disabled={updateEventCount.isPending || deleteEvent.isPending}
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                              onClick={() => {
+                                if (!activeSessionId || !selectedPlayerId) return;
+                                if (confirm("Deseja remover este evento?")) {
+                                  deleteEvent.mutate(
+                                    {
+                                      sessionId: activeSessionId,
+                                      playerId: selectedPlayerId,
+                                      eventId: event.id,
+                                    },
+                                    {
+                                      onSuccess: () => {
+                                        toast({
+                                          title: "Evento removido",
+                                          description: "Pontuação recalculada.",
+                                        });
+                                      },
+                                      onError: (error) => {
+                                        toast({
+                                          title: "Erro",
+                                          description:
+                                            error instanceof Error
+                                              ? error.message
+                                              : "Não foi possível remover o evento.",
+                                          variant: "destructive",
+                                        });
+                                      },
+                                    },
+                                  );
+                                }
+                              }}
+                              disabled={updateEventCount.isPending || deleteEvent.isPending}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </div>
+
+                        <div className="mt-2 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2 items-center">
+                          <div className="text-xs text-muted-foreground">
+                            pontos: {event.points > 0 ? "+" : ""}
+                            {event.points}
+                          </div>
+
+                          <div className="flex items-center justify-between sm:justify-end gap-2">
+                            {isEditing ? (
+                              <>
+                                <Input
+                                  type="number"
+                                  min={0}
+                                  className="h-9 w-24"
+                                  value={editingCount}
+                                  onChange={(e) => setEditingCount(e.target.value)}
+                                />
+                                <Button
+                                  variant="outline"
+                                  size="icon"
+                                  className="h-9 w-9"
+                                  onClick={async () => {
+                                    if (!activeSessionId || !selectedPlayerId) return;
+                                    const next = Number.parseInt(editingCount || "0", 10) || 0;
+                                    try {
+                                      await updateEventCount.mutateAsync({
+                                        sessionId: activeSessionId,
+                                        playerId: selectedPlayerId,
+                                        eventId: event.id,
+                                        count: next,
+                                      });
+                                      setEditingEventId(null);
+                                      setEditingCount("");
+                                      toast({
+                                        title: "Evento atualizado",
+                                        description: "Contagem atualizada e pontuação recalculada.",
+                                      });
+                                    } catch (error) {
+                                      toast({
+                                        title: "Erro",
+                                        description:
+                                          error instanceof Error
+                                            ? error.message
+                                            : "Não foi possível atualizar o evento.",
+                                        variant: "destructive",
+                                      });
+                                    }
+                                  }}
+                                  disabled={updateEventCount.isPending || deleteEvent.isPending}
+                                >
+                                  <Check className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  variant="outline"
+                                  size="icon"
+                                  className="h-9 w-9"
+                                  onClick={() => {
+                                    setEditingEventId(null);
+                                    setEditingCount("");
+                                  }}
+                                >
+                                  <X className="h-4 w-4" />
+                                </Button>
+                              </>
+                            ) : (
+                              <>
+                                <div className="text-xs text-muted-foreground">count: {event.count}</div>
+                                <div className="font-bold tabular-nums">
+                                  {event.totalPoints > 0 ? "+" : ""}
+                                  {event.totalPoints}
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setIsHistoryOpen(false)}>
+              Fechar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={isRevertOpen} onOpenChange={setIsRevertOpen}>
         <DialogContent className="max-w-2xl w-full max-h-[80vh] overflow-y-auto safe-area-overlay">

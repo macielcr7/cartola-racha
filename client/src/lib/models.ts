@@ -18,6 +18,7 @@ export interface DaySession {
   startedAt: string | null;
   isFinalized: boolean;
   finalizedAt: string | null;
+  lastParticipants?: string[] | null;
 }
 
 export interface DayEvent {

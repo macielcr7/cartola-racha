@@ -1,5 +1,11 @@
 import { Link } from "wouter";
-import { useDaySession, usePlayers, useInitializeDB, usePlayerDayEvents } from "@/hooks/use-data";
+import {
+  useDaySession,
+  usePlayers,
+  useInitializeDB,
+  usePlayerDayEvents,
+  useDayParticipants,
+} from "@/hooks/use-data";
 import { PlayerCard } from "@/components/PlayerCard";
 import { Button } from "@/components/ui/button";
 import {
@@ -21,6 +27,7 @@ export default function Home() {
   useInitializeDB(); // Ensure data exists
   const { data: players, isLoading } = usePlayers();
   const { data: daySession } = useDaySession();
+  const { data: dayParticipants } = useDayParticipants(daySession?.currentSessionId ?? null);
   const [selectedDayPlayerId, setSelectedDayPlayerId] = useState<string | null>(null);
   const [isDayModalOpen, setIsDayModalOpen] = useState(false);
 
@@ -33,11 +40,20 @@ export default function Home() {
     .slice()
     .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.name.localeCompare(b.name)));
 
-  const playersByScoreDay = (players ?? [])
-    .slice()
-    .sort((a, b) =>
+  const playersByScoreDay = useMemo(() => {
+    const list = (players ?? []).slice();
+    if (!daySession?.currentSessionId) return [];
+
+    const participants = dayParticipants?.participants ?? [];
+    const filtered =
+      participants.length > 0
+        ? list.filter((player) => participants.includes(player.id))
+        : list.filter((player) => player.scoreDay !== 0);
+
+    return filtered.sort((a, b) =>
       b.scoreDay !== a.scoreDay ? b.scoreDay - a.scoreDay : a.name.localeCompare(b.name),
     );
+  }, [players, daySession?.currentSessionId, dayParticipants?.participants]);
 
   const playersByBest = (players ?? [])
     .slice()
@@ -165,7 +181,11 @@ export default function Home() {
           </TabsContent>
 
           <TabsContent value="day" className="space-y-1">
-            {isLoading ? (
+            {!daySession?.currentSessionId ? (
+              <div className="text-center py-12 text-muted-foreground">
+                A pontuação do dia ainda não foi iniciada.
+              </div>
+            ) : isLoading ? (
               Array.from({ length: 5 }).map((_, i) => (
                 <div key={i} className="flex items-center p-4 mb-3 rounded-xl border bg-card">
                   <Skeleton className="w-8 h-8 rounded-full mr-4" />
@@ -192,7 +212,7 @@ export default function Home() {
                 />
               ))
             ) : (
-              <div className="text-center py-12 text-muted-foreground">Nenhum jogador cadastrado.</div>
+              <div className="text-center py-12 text-muted-foreground">Nenhum participante encontrado.</div>
             )}
           </TabsContent>
 

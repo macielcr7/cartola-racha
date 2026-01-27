@@ -11,6 +11,7 @@ import {
   increment,
   type QueryDocumentSnapshot,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -104,12 +105,16 @@ const getDaySession = async (): Promise<DaySession> => {
     startedAt?: { toDate?: () => Date };
     isFinalized?: boolean;
     finalizedAt?: { toDate?: () => Date };
+    lastParticipants?: unknown;
   };
   return {
     currentSessionId: data.currentSessionId ?? null,
     startedAt: data.startedAt?.toDate?.().toISOString() ?? null,
     isFinalized: data.isFinalized ?? false,
     finalizedAt: data.finalizedAt?.toDate?.().toISOString() ?? null,
+    lastParticipants: Array.isArray(data.lastParticipants)
+      ? (data.lastParticipants.filter((item) => typeof item === "string") as string[])
+      : null,
   };
 };
 
@@ -124,6 +129,21 @@ const getPlayerDayEvents = async (
   );
   const snapshot = await getDocs(eventsQuery);
   return snapshot.docs.map(mapDayEvent);
+};
+
+type DayParticipants = { sessionId: string; participants: string[] };
+
+const getDayParticipants = async (sessionId: string): Promise<DayParticipants> => {
+  if (!sessionId) return { sessionId: "", participants: [] };
+  const sessionSnapshot = await getDoc(doc(daySessionsCollection, sessionId));
+  if (!sessionSnapshot.exists()) {
+    return { sessionId, participants: [] };
+  }
+  const data = sessionSnapshot.data() as { participants?: unknown };
+  const participants = Array.isArray(data.participants)
+    ? (data.participants.filter((item) => typeof item === "string") as string[])
+    : [];
+  return { sessionId, participants };
 };
 
 export function usePlayers() {
@@ -152,6 +172,32 @@ export function usePlayerDayEvents(playerId: string | null, sessionId: string | 
     queryKey: ["dayEvents", sessionId, playerId],
     queryFn: () => getPlayerDayEvents(sessionId ?? "", playerId ?? ""),
     enabled: Boolean(playerId && sessionId),
+  });
+}
+
+export function useDayParticipants(sessionId: string | null) {
+  return useQuery({
+    queryKey: ["dayParticipants", sessionId],
+    queryFn: () => getDayParticipants(sessionId ?? ""),
+    enabled: Boolean(sessionId),
+  });
+}
+
+export function useSetDayParticipants() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ sessionId, participants }: { sessionId: string; participants: string[] }) => {
+      const unique = Array.from(new Set(participants)).filter(Boolean);
+      await setDoc(doc(daySessionsCollection, sessionId), { participants: unique }, { merge: true });
+      await setDoc(metaDayDoc, { lastParticipants: unique }, { merge: true });
+      return { sessionId, participants: unique };
+    },
+    onSuccess: (_, variables) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["dayParticipants", variables.sessionId] }),
+        queryClient.invalidateQueries({ queryKey: ["daySession"] }),
+      ]),
   });
 }
 
@@ -264,6 +310,7 @@ export function useStartDayScoring() {
       await setDoc(sessionRef, {
         startedAt: serverTimestamp(),
         isFinalized: false,
+        participants: [],
       });
       await setDoc(
         metaDayDoc,
@@ -293,6 +340,7 @@ export function useStartDayScoring() {
       Promise.all([
         queryClient.invalidateQueries({ queryKey: ["players"] }),
         queryClient.invalidateQueries({ queryKey: ["daySession"] }),
+        queryClient.invalidateQueries({ queryKey: ["dayParticipants"] }),
         queryClient.invalidateQueries({ queryKey: ["dayEvents"] }),
       ]),
   });
@@ -305,15 +353,21 @@ export function useRevertDayScoring() {
     mutationFn: async () => {
       const metaSnapshot = await getDoc(metaDayDoc);
       const metaData = metaSnapshot.exists()
-        ? (metaSnapshot.data() as { isFinalized?: boolean })
+        ? (metaSnapshot.data() as { isFinalized?: boolean; currentSessionId?: string | null })
         : {};
       const isFinalized = metaData.isFinalized ?? false;
+      const currentSessionId = metaData.currentSessionId ?? null;
+
+      const participants =
+        isFinalized && currentSessionId ? (await getDayParticipants(currentSessionId)).participants : [];
+      const participantSet = participants.length > 0 ? new Set(participants) : null;
 
       const playersSnapshot = await getDocs(playersCollection);
       const players = playersSnapshot.docs.map((docSnap) => {
         const data = docSnap.data() as Record<string, unknown>;
         return {
           ref: docSnap.ref,
+          id: docSnap.id,
           scoreDay: typeof data.scoreDay === "number" ? data.scoreDay : 0,
           best: typeof data.best === "number" ? data.best : 0,
           bad: typeof data.bad === "number" ? data.bad : 0,
@@ -324,9 +378,15 @@ export function useRevertDayScoring() {
         return { playersUpdated: 0, bestReverted: 0, badReverted: 0 };
       }
 
-      let maxScoreDay = players[0].scoreDay;
-      let minScoreDay = players[0].scoreDay;
-      for (const player of players) {
+      const scoringPool =
+        participantSet ? players.filter((player) => participantSet.has(player.id)) : players;
+      if (scoringPool.length === 0) {
+        return { playersUpdated: players.length, bestReverted: 0, badReverted: 0, isFinalized };
+      }
+
+      let maxScoreDay = scoringPool[0].scoreDay;
+      let minScoreDay = scoringPool[0].scoreDay;
+      for (const player of scoringPool) {
         if (player.scoreDay > maxScoreDay) maxScoreDay = player.scoreDay;
         if (player.scoreDay < minScoreDay) minScoreDay = player.scoreDay;
       }
@@ -347,11 +407,12 @@ export function useRevertDayScoring() {
           }
 
           if (isFinalized) {
-            if (player.scoreDay === maxScoreDay && player.best > 0) {
+            const inPool = participantSet ? participantSet.has(player.id) : true;
+            if (inPool && player.scoreDay === maxScoreDay && player.best > 0) {
               update.best = increment(-1);
               bestReverted += 1;
             }
-            if (player.scoreDay === minScoreDay && player.bad > 0) {
+            if (inPool && player.scoreDay === minScoreDay && player.bad > 0) {
               update.bad = increment(-1);
               badReverted += 1;
             }
@@ -387,6 +448,7 @@ export function useRevertDayScoring() {
       Promise.all([
         queryClient.invalidateQueries({ queryKey: ["players"] }),
         queryClient.invalidateQueries({ queryKey: ["daySession"] }),
+        queryClient.invalidateQueries({ queryKey: ["dayParticipants"] }),
         queryClient.invalidateQueries({ queryKey: ["dayEvents"] }),
       ]),
   });
@@ -450,12 +512,27 @@ export function useFinalizeDayScoring() {
 
   return useMutation({
     mutationFn: async () => {
+      const metaSnapshot = await getDoc(metaDayDoc);
+      const meta = metaSnapshot.exists()
+        ? (metaSnapshot.data() as { currentSessionId?: string | null })
+        : {};
+      const currentSessionId = meta.currentSessionId ?? null;
+      if (!currentSessionId) {
+        throw new Error("Sessão do dia não encontrada.");
+      }
+
+      const { participants } = await getDayParticipants(currentSessionId);
+      if (!participants || participants.length === 0) {
+        throw new Error("Defina os participantes do dia antes de finalizar.");
+      }
+
       const snapshot = await getDocs(playersCollection);
       const players = snapshot.docs.map((docSnap) => {
         const data = docSnap.data() as Record<string, unknown>;
         return {
           ref: docSnap.ref,
           scoreDay: typeof data.scoreDay === "number" ? data.scoreDay : 0,
+          id: docSnap.id,
         };
       });
 
@@ -463,10 +540,16 @@ export function useFinalizeDayScoring() {
         return { bestUpdated: 0, badUpdated: 0 };
       }
 
-      let maxScoreDay = players[0].scoreDay;
-      let minScoreDay = players[0].scoreDay;
+      const participantSet = new Set(participants);
+      const participantPlayers = players.filter((player) => participantSet.has(player.id));
+      if (participantPlayers.length === 0) {
+        throw new Error("Nenhum participante válido encontrado para a sessão atual.");
+      }
 
-      for (const player of players) {
+      let maxScoreDay = participantPlayers[0].scoreDay;
+      let minScoreDay = participantPlayers[0].scoreDay;
+
+      for (const player of participantPlayers) {
         if (player.scoreDay > maxScoreDay) maxScoreDay = player.scoreDay;
         if (player.scoreDay < minScoreDay) minScoreDay = player.scoreDay;
       }
@@ -476,7 +559,7 @@ export function useFinalizeDayScoring() {
         { best?: number; bad?: number }
       >();
 
-      for (const player of players) {
+      for (const player of participantPlayers) {
         if (player.scoreDay === maxScoreDay) {
           updateMap.set(player.ref, {
             ...updateMap.get(player.ref),
@@ -508,8 +591,8 @@ export function useFinalizeDayScoring() {
         await batch.commit();
       }
 
-      const bestUpdated = players.filter((p) => p.scoreDay === maxScoreDay).length;
-      const badUpdated = players.filter((p) => p.scoreDay === minScoreDay).length;
+      const bestUpdated = participantPlayers.filter((p) => p.scoreDay === maxScoreDay).length;
+      const badUpdated = participantPlayers.filter((p) => p.scoreDay === minScoreDay).length;
       await setDoc(
         metaDayDoc,
         { isFinalized: true, finalizedAt: serverTimestamp() },
@@ -521,6 +604,124 @@ export function useFinalizeDayScoring() {
       Promise.all([
         queryClient.invalidateQueries({ queryKey: ["players"] }),
         queryClient.invalidateQueries({ queryKey: ["daySession"] }),
+      ]),
+  });
+}
+
+export function useDeleteDayEvent() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      sessionId,
+      playerId,
+      eventId,
+    }: {
+      sessionId: string;
+      playerId: string;
+      eventId: string;
+    }) => {
+      await runTransaction(db, async (tx) => {
+        const metaSnap = await tx.get(metaDayDoc);
+        const meta = metaSnap.exists()
+          ? (metaSnap.data() as { isFinalized?: boolean })
+          : { isFinalized: false };
+        if (meta.isFinalized) {
+          throw new Error("Dia finalizado. Desfaça a finalização para editar eventos.");
+        }
+
+        const eventRef = doc(dayEventsCollection, eventId);
+        const eventSnap = await tx.get(eventRef);
+        if (!eventSnap.exists()) return;
+
+        const event = eventSnap.data() as {
+          sessionId?: string;
+          playerId?: string;
+          totalPoints?: number;
+        };
+
+        if (event.sessionId !== sessionId || event.playerId !== playerId) {
+          throw new Error("Evento não pertence à sessão/jogador selecionado.");
+        }
+
+        const totalPoints = typeof event.totalPoints === "number" ? event.totalPoints : 0;
+
+        tx.delete(eventRef);
+        tx.update(doc(playersCollection, playerId), {
+          scoreDay: increment(-totalPoints),
+          score: increment(-totalPoints),
+        });
+      });
+      return { eventId };
+    },
+    onSuccess: (_, variables) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["players"] }),
+        queryClient.invalidateQueries({ queryKey: ["dayEvents", variables.sessionId, variables.playerId] }),
+      ]),
+  });
+}
+
+export function useUpdateDayEventCount() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      sessionId,
+      playerId,
+      eventId,
+      count,
+    }: {
+      sessionId: string;
+      playerId: string;
+      eventId: string;
+      count: number;
+    }) => {
+      const safeCount = Math.max(0, Math.floor(count));
+      await runTransaction(db, async (tx) => {
+        const metaSnap = await tx.get(metaDayDoc);
+        const meta = metaSnap.exists()
+          ? (metaSnap.data() as { isFinalized?: boolean })
+          : { isFinalized: false };
+        if (meta.isFinalized) {
+          throw new Error("Dia finalizado. Desfaça a finalização para editar eventos.");
+        }
+
+        const eventRef = doc(dayEventsCollection, eventId);
+        const eventSnap = await tx.get(eventRef);
+        if (!eventSnap.exists()) return;
+
+        const event = eventSnap.data() as {
+          sessionId?: string;
+          playerId?: string;
+          points?: number;
+          count?: number;
+          totalPoints?: number;
+        };
+
+        if (event.sessionId !== sessionId || event.playerId !== playerId) {
+          throw new Error("Evento não pertence à sessão/jogador selecionado.");
+        }
+
+        const points = typeof event.points === "number" ? event.points : 0;
+        const prevTotal = typeof event.totalPoints === "number" ? event.totalPoints : points * (event.count ?? 0);
+        const nextTotal = points * safeCount;
+        const diff = nextTotal - prevTotal;
+
+        tx.update(eventRef, { count: safeCount, totalPoints: nextTotal });
+        if (diff !== 0) {
+          tx.update(doc(playersCollection, playerId), {
+            scoreDay: increment(diff),
+            score: increment(diff),
+          });
+        }
+      });
+      return { eventId, count: safeCount };
+    },
+    onSuccess: (_, variables) =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["players"] }),
+        queryClient.invalidateQueries({ queryKey: ["dayEvents", variables.sessionId, variables.playerId] }),
       ]),
   });
 }
