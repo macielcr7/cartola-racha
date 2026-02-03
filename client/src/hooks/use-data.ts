@@ -189,8 +189,18 @@ export function useSetDayParticipants() {
   return useMutation({
     mutationFn: async ({ sessionId, participants }: { sessionId: string; participants: string[] }) => {
       const unique = Array.from(new Set(participants)).filter(Boolean);
-      await setDoc(doc(daySessionsCollection, sessionId), { participants: unique }, { merge: true });
-      await setDoc(metaDayDoc, { lastParticipants: unique }, { merge: true });
+      await runTransaction(db, async (tx) => {
+        const metaSnap = await tx.get(metaDayDoc);
+        const meta = metaSnap.exists()
+          ? (metaSnap.data() as { isFinalized?: boolean })
+          : { isFinalized: false };
+        if (meta.isFinalized) {
+          throw new Error("Dia finalizado. Desfaça a finalização para editar participantes.");
+        }
+
+        tx.set(doc(daySessionsCollection, sessionId), { participants: unique }, { merge: true });
+        tx.set(metaDayDoc, { lastParticipants: unique }, { merge: true });
+      });
       return { sessionId, participants: unique };
     },
     onSuccess: (_, variables) =>
@@ -475,27 +485,37 @@ export function useApplyDayScoreDelta() {
         totalPoints: number;
       }>;
     }) => {
-      const batch = writeBatch(db);
-      batch.update(doc(db, "players", playerId), {
-        scoreDay: increment(delta),
-        score: increment(delta),
-      });
+      await runTransaction(db, async (tx) => {
+        const metaSnap = await tx.get(metaDayDoc);
+        const meta = metaSnap.exists()
+          ? (metaSnap.data() as { isFinalized?: boolean; currentSessionId?: string | null })
+          : { isFinalized: false };
+        if (meta.isFinalized) {
+          throw new Error("Dia finalizado. Desfaça a finalização para aplicar pontuação.");
+        }
+        if (meta.currentSessionId && meta.currentSessionId !== sessionId) {
+          throw new Error("Sessão do dia não corresponde à sessão ativa.");
+        }
 
-      for (const item of items) {
-        const eventRef = doc(dayEventsCollection);
-        batch.set(eventRef, {
-          sessionId,
-          playerId,
-          categoryId: item.categoryId,
-          categoryName: item.categoryName,
-          points: item.points,
-          count: item.count,
-          totalPoints: item.totalPoints,
-          createdAt: serverTimestamp(),
+        tx.update(doc(playersCollection, playerId), {
+          scoreDay: increment(delta),
+          score: increment(delta),
         });
-      }
 
-      await batch.commit();
+        for (const item of items) {
+          const eventRef = doc(dayEventsCollection);
+          tx.set(eventRef, {
+            sessionId,
+            playerId,
+            categoryId: item.categoryId,
+            categoryName: item.categoryName,
+            points: item.points,
+            count: item.count,
+            totalPoints: item.totalPoints,
+            createdAt: serverTimestamp(),
+          });
+        }
+      });
 
       return { applied: delta };
     },
@@ -514,8 +534,11 @@ export function useFinalizeDayScoring() {
     mutationFn: async () => {
       const metaSnapshot = await getDoc(metaDayDoc);
       const meta = metaSnapshot.exists()
-        ? (metaSnapshot.data() as { currentSessionId?: string | null })
+        ? (metaSnapshot.data() as { currentSessionId?: string | null; isFinalized?: boolean })
         : {};
+      if (meta.isFinalized) {
+        throw new Error("Dia já está finalizado. Desfaça a finalização para finalizar novamente.");
+      }
       const currentSessionId = meta.currentSessionId ?? null;
       if (!currentSessionId) {
         throw new Error("Sessão do dia não encontrada.");
@@ -599,6 +622,111 @@ export function useFinalizeDayScoring() {
         { merge: true },
       );
       return { bestUpdated, badUpdated, maxScoreDay, minScoreDay };
+    },
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["players"] }),
+        queryClient.invalidateQueries({ queryKey: ["daySession"] }),
+      ]),
+  });
+}
+
+export function useUnfinalizeDayScoring() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async () => {
+      const metaSnapshot = await getDoc(metaDayDoc);
+      const metaData = metaSnapshot.exists()
+        ? (metaSnapshot.data() as { isFinalized?: boolean; currentSessionId?: string | null })
+        : {};
+      const isFinalized = metaData.isFinalized ?? false;
+      const currentSessionId = metaData.currentSessionId ?? null;
+
+      if (!isFinalized) {
+        return { unfinalized: false, bestReverted: 0, badReverted: 0 };
+      }
+
+      if (!currentSessionId) {
+        throw new Error("Sessão do dia não encontrada.");
+      }
+
+      const { participants } = await getDayParticipants(currentSessionId);
+      if (!participants || participants.length === 0) {
+        throw new Error("Defina os participantes do dia antes de desfazer a finalização.");
+      }
+
+      const snapshot = await getDocs(playersCollection);
+      const players = snapshot.docs.map((docSnap) => {
+        const data = docSnap.data() as Record<string, unknown>;
+        return {
+          ref: docSnap.ref,
+          id: docSnap.id,
+          scoreDay: typeof data.scoreDay === "number" ? data.scoreDay : 0,
+          best: typeof data.best === "number" ? data.best : 0,
+          bad: typeof data.bad === "number" ? data.bad : 0,
+        };
+      });
+
+      const participantSet = new Set(participants);
+      const participantPlayers = players.filter((player) => participantSet.has(player.id));
+      if (participantPlayers.length === 0) {
+        throw new Error("Nenhum participante válido encontrado para a sessão atual.");
+      }
+
+      let maxScoreDay = participantPlayers[0].scoreDay;
+      let minScoreDay = participantPlayers[0].scoreDay;
+      for (const player of participantPlayers) {
+        if (player.scoreDay > maxScoreDay) maxScoreDay = player.scoreDay;
+        if (player.scoreDay < minScoreDay) minScoreDay = player.scoreDay;
+      }
+
+      const updateMap = new Map<
+        (typeof players)[number]["ref"],
+        { best?: number; bad?: number }
+      >();
+      let bestReverted = 0;
+      let badReverted = 0;
+
+      for (const player of participantPlayers) {
+        const incs: { best?: number; bad?: number } = {};
+        if (player.scoreDay === maxScoreDay && player.best > 0) {
+          incs.best = -1;
+          bestReverted += 1;
+        }
+        if (player.scoreDay === minScoreDay && player.bad > 0) {
+          incs.bad = -1;
+          badReverted += 1;
+        }
+        if (incs.best || incs.bad) {
+          updateMap.set(player.ref, {
+            ...updateMap.get(player.ref),
+            ...(incs.best ? { best: incs.best } : {}),
+            ...(incs.bad ? { bad: incs.bad } : {}),
+          });
+        }
+      }
+
+      const updates = Array.from(updateMap.entries()).map(([ref, incs]) => ({
+        ref,
+        incs,
+      }));
+
+      const chunks = chunkArray(updates, 400);
+      for (const chunk of chunks) {
+        const batch = writeBatch(db);
+        for (const item of chunk) {
+          batch.update(item.ref, {
+            ...(item.incs.best ? { best: increment(item.incs.best) } : {}),
+            ...(item.incs.bad ? { bad: increment(item.incs.bad) } : {}),
+          });
+        }
+        await batch.commit();
+      }
+
+      await setDoc(metaDayDoc, { isFinalized: false, finalizedAt: null }, { merge: true });
+
+      return { unfinalized: true, bestReverted, badReverted, maxScoreDay, minScoreDay };
     },
     onSuccess: () =>
       Promise.all([

@@ -6,6 +6,7 @@ import {
   useDayParticipants,
   useDeleteDayEvent,
   useFinalizeDayScoring,
+  useUnfinalizeDayScoring,
   usePlayerDayEvents,
   usePlayers,
   useRevertDayScoring,
@@ -44,6 +45,7 @@ export function ScoreUpdateForm() {
   const startDay = useStartDayScoring();
   const applyDelta = useApplyDayScoreDelta();
   const finalizeDay = useFinalizeDayScoring();
+  const unfinalizeDay = useUnfinalizeDayScoring();
   const revertDay = useRevertDayScoring();
   const { toast } = useToast();
 
@@ -60,7 +62,8 @@ export function ScoreUpdateForm() {
 
   const activeSessionId = sessionId || daySession?.currentSessionId || null;
   const isFinalized = daySession?.isFinalized ?? false;
-  const isSessionActive = Boolean(activeSessionId) && !isFinalized;
+  const hasActiveSession = Boolean(activeSessionId);
+  const canScore = hasActiveSession && !isFinalized;
   const canRevert =
     Boolean(daySession?.currentSessionId) ||
     Boolean(players?.some((player) => player.scoreDay !== 0)) ||
@@ -263,7 +266,7 @@ export function ScoreUpdateForm() {
   };
 
   const handleApply = async () => {
-    if (!isSessionActive || !selectedPlayerId) return;
+    if (!canScore || !selectedPlayerId) return;
     if (participants.length === 0) {
       toast({
         title: "Defina os participantes",
@@ -370,6 +373,29 @@ export function ScoreUpdateForm() {
     }
   };
 
+  const handleUnfinalize = async () => {
+    try {
+      const result = await unfinalizeDay.mutateAsync();
+      if (!result.unfinalized) {
+        toast({ title: "Dia já está aberto", description: "A finalização já estava desfeita." });
+        return;
+      }
+      toast({
+        title: "Finalização desfeita",
+        description: `Best revertidos: ${result.bestReverted} | Bad revertidos: ${result.badReverted}. Agora você pode editar eventos e finalizar novamente.`,
+      });
+    } catch (error) {
+      toast({
+        title: "Erro",
+        description:
+          error instanceof Error
+            ? error.message
+            : "Não foi possível desfazer a finalização. Tente novamente.",
+        variant: "destructive",
+      });
+    }
+  };
+
   const handleRevert = async () => {
     try {
       const result = await revertDay.mutateAsync();
@@ -462,7 +488,7 @@ export function ScoreUpdateForm() {
         </div>
         {isFinalized && (
           <div className="text-sm text-muted-foreground">
-            Pontuação finalizada. Inicie uma nova pontuação para continuar.
+            Pontuação finalizada. Use "Corrigir/editar eventos do dia" para desfazer a finalização e corrigir, e depois finalize novamente.
           </div>
         )}
 
@@ -474,18 +500,20 @@ export function ScoreUpdateForm() {
               setSelectedPlayerId(value);
               resetCounts();
             }}
-            disabled={!isSessionActive || participantsLoading || participants.length === 0}
+            disabled={!hasActiveSession || participantsLoading || participants.length === 0}
           >
             <SelectTrigger className="h-12 bg-background">
               <SelectValue
                 placeholder={
-                  !isSessionActive
+                  !hasActiveSession
                     ? "Clique em Iniciar Pontuação"
                     : participantsLoading
                       ? "Carregando participantes..."
                       : participants.length === 0
                         ? "Defina os participantes do dia"
-                        : "Escolha um jogador..."
+                        : isFinalized
+                          ? "Dia finalizado (desfaça para editar)"
+                          : "Escolha um jogador..."
                 }
               />
             </SelectTrigger>
@@ -503,13 +531,13 @@ export function ScoreUpdateForm() {
           <div className="rounded-xl border bg-background p-4">
             <div className="text-xs uppercase font-bold text-muted-foreground tracking-wider">Pontuação do Dia</div>
             <div className="text-2xl font-display font-bold text-primary tabular-nums">
-              {isSessionActive && selectedPlayer ? previewScoreDay : "—"}
+              {selectedPlayer ? (canScore ? previewScoreDay : selectedPlayer.scoreDay) : "—"}
             </div>
           </div>
           <div className="rounded-xl border bg-background p-4">
             <div className="text-xs uppercase font-bold text-muted-foreground tracking-wider">Pontuação Total</div>
             <div className="text-2xl font-display font-bold text-primary tabular-nums">
-              {isSessionActive && selectedPlayer ? previewScoreTotal : "—"}
+              {selectedPlayer ? (canScore ? previewScoreTotal : selectedPlayer.score) : "—"}
             </div>
           </div>
         </div>
@@ -524,7 +552,7 @@ export function ScoreUpdateForm() {
               .sort((a, b) => b.points - a.points)
               .map((category) => {
               const count = counts[category.id] ?? 0;
-              const isDisabled = !isSessionActive || !selectedPlayerId;
+              const isDisabled = !canScore || !selectedPlayerId;
 
               return (
                 <div
@@ -569,7 +597,7 @@ export function ScoreUpdateForm() {
         <Button
           className="w-full h-12 text-lg font-bold bg-primary hover:bg-primary/90 shadow-lg shadow-primary/20"
           disabled={
-            !isSessionActive ||
+            !canScore ||
             !selectedPlayerId ||
             applyDelta.isPending ||
             participants.length === 0 ||
@@ -583,7 +611,7 @@ export function ScoreUpdateForm() {
         <Button
           variant="outline"
           className="w-full h-12 font-bold"
-          disabled={!isSessionActive || !selectedPlayerId || !selectedIsParticipant}
+          disabled={!activeSessionId || !selectedPlayerId || !selectedIsParticipant}
           onClick={() => setIsHistoryOpen(true)}
         >
           <Pencil className="h-4 w-4 mr-2" />
@@ -714,11 +742,17 @@ export function ScoreUpdateForm() {
           {!activeSessionId || !selectedPlayer ? (
             <div className="text-sm text-muted-foreground">Selecione uma sessão e um jogador.</div>
           ) : isFinalized ? (
-            <div className="rounded-lg border bg-muted/30 p-3 text-sm">
-              <div className="font-semibold">Dia finalizado</div>
-              <div className="text-muted-foreground">
-                Para manter coerência de best/bad, edições de eventos ficam bloqueadas após finalizar.
+            <div className="space-y-3">
+              <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+                <div className="font-semibold">Dia finalizado</div>
+                <div className="text-muted-foreground">
+                  Para manter coerência de best/bad, edições de eventos ficam bloqueadas após finalizar. Desfaça a
+                  finalização para corrigir e finalize novamente.
+                </div>
               </div>
+              <Button onClick={handleUnfinalize} disabled={unfinalizeDay.isPending} className="w-full">
+                {unfinalizeDay.isPending ? "Desfazendo finalização..." : "Desfazer finalização e editar"}
+              </Button>
             </div>
           ) : historyLoading ? (
             <div className="text-sm text-muted-foreground">Carregando eventos...</div>
